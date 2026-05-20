@@ -42,11 +42,19 @@ const SubmitWithdrawalButtonInner: React.FC<SubmitWithdrawalButtonProps> = ({
       const childChainNetwork = await getArbitrumNetwork(l2Provider);
       const ethBridger = new EthBridger(childChainNetwork);
 
+      // Nova Cidade returns very low gas estimates; apply a 5x base-fee buffer
+      // to avoid "max fee per gas less than block base fee" reverts.
+      const latestBlock = await signer.provider!.getBlock("latest");
+      const baseFee = latestBlock.baseFeePerGas ?? BigNumber.from(0);
+      const maxPriorityFeePerGas = BigNumber.from(0);
+      const maxFeePerGas = baseFee.mul(5).add(maxPriorityFeePerGas);
+
       const withdrawTransaction = await ethBridger.withdraw({
         from: address,
         amount: BigNumber.from(amount.toString()),
         childSigner: signer,
         destinationAddress: address,
+        overrides: { maxFeePerGas, maxPriorityFeePerGas },
       });
 
       setTxHash(withdrawTransaction.hash);

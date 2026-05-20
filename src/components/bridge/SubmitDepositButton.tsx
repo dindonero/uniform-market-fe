@@ -41,9 +41,19 @@ const SubmitDepositButtonInner: React.FC<SubmitDepositButtonProps> = ({
       const childChainNetwork = getArbitrumNetwork(defaultChain.id);
       const ethBridger = new EthBridger(childChainNetwork);
 
+      // Arbitrum Sepolia's base fee fluctuates within seconds and the default
+      // ethers v5 estimation (maxFeePerGas = baseFee*2) routinely lands below
+      // the next block's baseFee, causing "max fee per gas less than block
+      // base fee" reverts. Apply a 5x buffer over the current base fee.
+      const latestBlock = await signer.provider!.getBlock("latest");
+      const baseFee = latestBlock.baseFeePerGas ?? BigNumber.from(0);
+      const maxPriorityFeePerGas = BigNumber.from(0); // Arbitrum sequencer ignores priority fee
+      const maxFeePerGas = baseFee.mul(5).add(maxPriorityFeePerGas);
+
       const depositTransaction = await ethBridger.deposit({
         amount: BigNumber.from(amount.toString()),
         parentSigner: signer,
+        overrides: { maxFeePerGas, maxPriorityFeePerGas },
       });
 
       setTxHash(depositTransaction.hash);

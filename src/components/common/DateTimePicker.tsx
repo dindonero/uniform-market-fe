@@ -20,6 +20,12 @@ const DateTimePicker: React.FC<DateTimePickerProps> = ({
   const [mode, setMode] = useState<"range" | "multiple">("range");
   const [isCalendarOpen, setIsCalendarOpen] = useState(true);
 
+  // Track whether we've mounted on the client. Server output renders nothing
+  // for this subtree so SSR markup never depends on `new Date()`, avoiding
+  // React #418 (text content mismatch between server and client).
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+
   // Range mode state
   const [dateRange, setDateRange] = useState<DateRange | undefined>({
     from: getNextHour(1),
@@ -175,6 +181,12 @@ const DateTimePicker: React.FC<DateTimePickerProps> = ({
     setStartHour(0);
     setEndHour(24);
   }, []);
+
+  // Render a fixed-height placeholder during SSR / first paint to avoid
+  // hydration mismatches from the `new Date()` defaults above.
+  if (!mounted) {
+    return <div className="space-y-5 sm:space-y-6" aria-hidden style={{ minHeight: 480 }} />;
+  }
 
   return (
     <div className="space-y-5 sm:space-y-6">
