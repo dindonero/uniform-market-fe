@@ -13,7 +13,6 @@ ETH from Arbitrum Sepolia (L2) → Nova Cidade (L3) via Arbitrum Orbit.
 - viem 2.x + ethers (via `@arbitrum/sdk` for bridge deposits)
 - Tailwind 4 + lucide-react + motion(framer)
 - react-day-picker for date pickers
-- Remotion for tutorial video composition
 
 ## Directory map
 ```
@@ -31,8 +30,6 @@ src/
   utils/        dateHelpers, units (kWh ↔ watts), formatBalance, fetchUserCountry
 abi/            EnergyBiddingMarket.json, CommunitasNFT.json
 constants/      addresses.json (per-chain, per-region market addresses), outputInfo.json (Nova Cidade chain meta)
-remotion/       Tutorial video scenes referencing public/tutorials/*.mp4
-Videos COMMUNITAS V0.2/  Source recordings of test cases TC09.01..TC09.10
 ```
 
 ## Key commands
@@ -42,12 +39,30 @@ npm run dev                # next dev server (localhost:3000)
 npm run build              # next build
 npm run start              # serve production build
 npm run lint               # eslint
-npm run remotion:studio    # open Remotion Studio to preview tutorials
 ```
 
 ## Chains
 - **Nova Cidade Chain (default)** — chainId `93735000855` / `0x15d30a9b17`, RPC `https://testnet.novaims.unl.pt/`, explorer `https://testnet.explorer.novaims.unl.pt/`. Hosts all `EnergyBiddingMarket` contracts.
 - **Arbitrum Sepolia (parent)** — chainId `421614`, RPC from `NEXT_PUBLIC_INFURA_RPC` (Alchemy by default). Used as origin for the deposit flow into Nova Cidade.
+
+## Faucet (`/faucet`)
+- Page: `src/pages/faucet.tsx`. API: `src/pages/api/faucet.ts` (server-side, uses
+  `FAUCET_PRIVATE_KEY` + `FAUCET_PASSWORD` from `.env`).
+- **Dual-chain**: each request sends **two** transactions from the same faucet
+  wallet (`0x7502e2fcD1416648e4F2392B8F274C7f1e5b1081`):
+  - **0.01 ETH on Nova Cidade L3** (`FAUCET_AMOUNT_NOVA`) — covers all market tests.
+  - **0.0015 ETH on Arbitrum Sepolia** (`FAUCET_AMOUNT_ARB`) — covers the two
+    bridge-dependent tests (TC09.01 deposit + withdrawal claim). Sizing: 0.001 ETH
+    bridged + ~0.0005 ETH gas headroom across both legs at live ~0.02 gwei base fee.
+- Arb Sepolia send applies `maxFeePerGas = baseFee*5`, `maxPriorityFeePerGas = 0`
+  to dodge the "max fee per gas less than block base fee" revert (same pattern as
+  the bridge buttons).
+- API response returns legacy `{hash, amount, explorer}` (Nova) plus
+  `{novaCidade, arbitrumSepolia}` objects (each `{chain, amount, hash, explorer}`).
+  The success view renders one tx block per chain, each with copy + explorer links.
+- Min-balance guards: `MIN_BALANCE_NOVA = 0.02`, `MIN_BALANCE_ARB = 0.003`.
+- Verified end-to-end 2026-06-02 (drove the page with the `playwright` Claude skill,
+  both txs confirmed on-chain: Nova `0x94b768…c4a0`, Arb `0x9db393…f09d15`).
 
 ## Conventions
 - Contract operates in **watts**; UI displays **kWh**. Conversion lives in `utils/units.ts` (`WATTS_PER_KWH = 1000`).
@@ -56,15 +71,13 @@ npm run remotion:studio    # open Remotion Studio to preview tutorials
 - `SubmitDepositButton` uses `@arbitrum/sdk` `EthBridger.deposit({ amount, parentSigner })` — see "Known bugs" below.
 - TransactionModal phases: `idle → pending → confirming → bridging → success | error`.
 
-## Test cases (videos in `Videos COMMUNITAS V0.2/`)
+## Test cases
 - TC09.01 — Connect wallet + Bridge funds Arbitrum → Nova Cidade
 - TC09.02 — Place a bid on energy
 - TC09.04 — Check bid result (Buyer Orders)
 - TC09.06 — Claim refund (Buyer)
 - TC09.08 — Cancel bid order
 - TC09.10 — Dashboard / hourly energy data
-
-Create / Recover MetaMask wallet videos are out-of-scope (browser-extension only).
 
 ## Known bugs found 2026-05-20 via Playwright + dappwright (MetaMask 13.17.0) automation against `https://wattswap.vercel.app/`
 
@@ -134,11 +147,27 @@ Create / Recover MetaMask wallet videos are out-of-scope (browser-extension only
 
 ## Playwright + MetaMask test harness (developer reference)
 
-For automated dApp testing against a live MetaMask extension we used
-`@tenkeylabs/dappwright` + a custom popup-driver (the built-in
-`wallet.approve()` / `wallet.confirmTransaction()` fail on MM 13.17 because
-they wait for a new-page event that this MM version doesn't fire reliably).
-Key gotchas:
+A persistent MM profile lives at `~/.cache/wattswap-test/`. Reuse it instead
+of re-onboarding MetaMask every run — first connect goes from ~60–90s
+(dappwright bootstrap) down to **~11s** (Chromium launches with the cached
+profile, wagmi auto-reconnects from saved cookies).
+
+```js
+import { openMM, driveMM, shadowClick } from '/home/USER/.cache/wattswap-test/mm-launcher.mjs';
+
+const { context, mmExtensionId, close } = await openMM();
+const page = await context.newPage();
+await page.goto('https://wattswap.vercel.app');     // already connected
+await driveMM(context, 'tx-confirm');               // approves any open MM popup
+await close();
+```
+
+Smoke test: `node ~/.cache/wattswap-test/smoke-launcher.mjs`. To rebuild the
+cache (e.g. after a MetaMask upgrade): `node ~/.cache/wattswap-test/bootstrap-once.mjs`.
+The cache imports the `FAUCET_PRIVATE_KEY` from this repo's `.env`.
+
+For the underlying problems with `@tenkeylabs/dappwright` against MM 13.17
+(why we built the launcher in the first place):
 
 - `dappwright.bootstrap(...)` only triggers the MetaMask download when
   `process.env.TEST_PARALLEL_INDEX === '0'`. **Always export

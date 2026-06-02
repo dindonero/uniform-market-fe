@@ -24,10 +24,19 @@ import { ErrorBoundary, Button } from "@/components/ui";
 /* ── Types ── */
 type FaucetStatus = "idle" | "loading" | "success" | "error";
 
+interface FaucetTx {
+  chain: string;
+  amount: string;
+  hash: string;
+  explorer: string;
+}
+
 interface FaucetResult {
   hash?: string;
   amount?: string;
   explorer?: string;
+  novaCidade?: FaucetTx;
+  arbitrumSepolia?: FaucetTx;
   error?: string;
 }
 
@@ -69,7 +78,7 @@ export default function Faucet() {
   const [password, setPassword] = useState("");
   const [status, setStatus] = useState<FaucetStatus>("idle");
   const [result, setResult] = useState<FaucetResult>({});
-  const [copied, setCopied] = useState(false);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
   const addressInputRef = useRef<HTMLInputElement>(null);
 
   // Auto-fill connected wallet
@@ -81,18 +90,16 @@ export default function Faucet() {
 
   // Copy hash
   useEffect(() => {
-    if (copied) {
-      const timer = setTimeout(() => setCopied(false), 2000);
+    if (copiedKey) {
+      const timer = setTimeout(() => setCopiedKey(null), 2000);
       return () => clearTimeout(timer);
     }
-  }, [copied]);
+  }, [copiedKey]);
 
-  const copyHash = useCallback(() => {
-    if (result.hash) {
-      navigator.clipboard.writeText(result.hash);
-      setCopied(true);
-    }
-  }, [result.hash]);
+  const copyHash = useCallback((key: string, value: string) => {
+    navigator.clipboard.writeText(value);
+    setCopiedKey(key);
+  }, []);
 
   const handleRequest = useCallback(async () => {
     if (!walletAddress || !password) return;
@@ -203,7 +210,7 @@ export default function Faucet() {
                         Nova Cidade Faucet
                       </h1>
                       <p className="text-xs sm:text-sm text-gray-500 mt-1">
-                        Request testnet ETH on the L3 chain
+                        Testnet ETH on Nova Cidade L3 and Arbitrum Sepolia
                       </p>
                     </div>
                   </div>
@@ -223,7 +230,7 @@ export default function Faucet() {
                       Request ETH
                     </span>
                     <span className="ml-auto text-[11px] text-gray-600 font-mono">
-                      0.01 ETH / request
+                      0.01 L3 + 0.0015 Arb / request
                     </span>
                   </div>
 
@@ -323,16 +330,27 @@ export default function Faucet() {
                           </Button>
 
                           {/* Info */}
-                          <div className="p-3 rounded-xl bg-white/[0.02] border border-white/5">
+                          <div className="p-3 rounded-xl bg-white/[0.02] border border-white/5 space-y-2.5">
                             <div className="flex items-start gap-2.5">
                               <div className="w-1 h-1 rounded-full bg-cyan-500 mt-1.5 shrink-0" />
                               <p className="text-[11px] sm:text-xs text-gray-500 leading-relaxed">
-                                You can request{" "}
+                                Each request sends{" "}
                                 <span className="text-gray-400 font-medium">
                                   0.01 ETH
                                 </span>{" "}
-                                once per hour per address on the Nova Cidade L3
-                                testnet.
+                                on Nova Cidade L3 for the market tests, and{" "}
+                                <span className="text-gray-400 font-medium">
+                                  0.0015 ETH
+                                </span>{" "}
+                                on Arbitrum Sepolia for the two bridge-dependent
+                                tests (deposit and withdrawal).
+                              </p>
+                            </div>
+                            <div className="flex items-start gap-2.5">
+                              <div className="w-1 h-1 rounded-full bg-cyan-500 mt-1.5 shrink-0" />
+                              <p className="text-[11px] sm:text-xs text-gray-500 leading-relaxed">
+                                One request per hour per address. Two
+                                transactions are sent, one per chain.
                               </p>
                             </div>
                           </div>
@@ -369,34 +387,47 @@ export default function Faucet() {
                               ETH Sent!
                             </h3>
                             <p className="text-sm text-gray-400 mt-1">
-                              {result.amount} ETH is on its way to your wallet
+                              Funds are on their way to your wallet on both
+                              chains
                             </p>
                           </div>
 
-                          {/* Tx details */}
-                          {result.hash && (
-                            <div className="p-3 sm:p-4 rounded-xl bg-white/4 space-y-3">
-                              <p className="text-xs text-[var(--color-text-muted)]">
-                                Transaction Hash
-                              </p>
-                              <div className="flex items-center gap-2">
-                                <code className="flex-1 text-xs text-gray-300 font-mono truncate min-w-0">
-                                  {result.hash}
-                                </code>
-                                <button
-                                  onClick={copyHash}
-                                  className="p-2.5 rounded-lg bg-white/5 hover:bg-white/10 active:bg-white/15 text-[var(--color-text-muted)] hover:text-white transition-colors shrink-0"
-                                  title="Copy hash"
-                                >
-                                  {copied ? (
-                                    <Check size={14} />
-                                  ) : (
-                                    <Copy size={14} />
-                                  )}
-                                </button>
-                                {result.explorer && (
+                          {/* Tx details — one block per chain */}
+                          {[result.novaCidade, result.arbitrumSepolia]
+                            .filter((tx): tx is FaucetTx => Boolean(tx?.hash))
+                            .map((tx) => (
+                              <div
+                                key={tx.chain}
+                                className="p-3 sm:p-4 rounded-xl bg-white/4 space-y-2.5"
+                              >
+                                <div className="flex items-center justify-between">
+                                  <span className="text-xs font-semibold text-white">
+                                    {tx.chain}
+                                  </span>
+                                  <span className="text-[11px] text-cyan-400 font-mono">
+                                    {tx.amount} ETH
+                                  </span>
+                                </div>
+                                <p className="text-[11px] text-[var(--color-text-muted)]">
+                                  Transaction Hash
+                                </p>
+                                <div className="flex items-center gap-2">
+                                  <code className="flex-1 text-xs text-gray-300 font-mono truncate min-w-0">
+                                    {tx.hash}
+                                  </code>
+                                  <button
+                                    onClick={() => copyHash(tx.chain, tx.hash)}
+                                    className="p-2.5 rounded-lg bg-white/5 hover:bg-white/10 active:bg-white/15 text-[var(--color-text-muted)] hover:text-white transition-colors shrink-0"
+                                    title="Copy hash"
+                                  >
+                                    {copiedKey === tx.chain ? (
+                                      <Check size={14} />
+                                    ) : (
+                                      <Copy size={14} />
+                                    )}
+                                  </button>
                                   <a
-                                    href={result.explorer}
+                                    href={tx.explorer}
                                     target="_blank"
                                     rel="noopener noreferrer"
                                     className="p-2.5 rounded-lg bg-white/5 hover:bg-white/10 active:bg-white/15 text-[var(--color-text-muted)] hover:text-white transition-colors shrink-0"
@@ -404,10 +435,9 @@ export default function Faucet() {
                                   >
                                     <ExternalLink size={14} />
                                   </a>
-                                )}
+                                </div>
                               </div>
-                            </div>
-                          )}
+                            ))}
 
                           <Button
                             fullWidth

@@ -39,8 +39,6 @@ next-env.d.ts
 /.idea/
 .claude/
 
-# Remotion
-remotion/assets/screenshots/
-remotion/out/
+# media
 *.mp4
 *.webm
