@@ -22,14 +22,22 @@ export const novaCidadeMainnet = defineChain({
 // Default chain is Nova Cidade (L2/L3)
 export const defaultChain = novaCidadeMainnet;
 
+// Public Arbitrum Sepolia RPC. Heavily rate-limited per IP (a NATted campus shares one),
+// so it is only ever a backup behind the keyed endpoint — never the primary.
+export const ARBITRUM_SEPOLIA_PUBLIC_RPC = "https://sepolia-rollup.arbitrum.io/rpc";
+
 // Custom Arbitrum Sepolia with your Alchemy RPC
 const customRpcUrl = process.env.NEXT_PUBLIC_INFURA_RPC;
+
+export const arbitrumSepoliaRpcUrls = [customRpcUrl, ARBITRUM_SEPOLIA_PUBLIC_RPC].filter(
+  (u): u is string => Boolean(u)
+);
 
 export const customArbitrumSepolia = customRpcUrl
   ? defineChain({
       ...arbitrumSepolia,
       rpcUrls: {
-        default: { http: [customRpcUrl] },
+        default: { http: arbitrumSepoliaRpcUrls },
       },
     })
   : arbitrumSepolia;

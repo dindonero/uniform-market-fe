@@ -1,156 +1,226 @@
-# COMMUNITAS Energy Market — Project Notes
+# WattSwap frontend (Communitas-uniform-market-fe)
 
-## Project goal
-Frontend (Next.js Pages Router) for an on-chain energy bidding market. Buyers
-post bids and sellers post asks per hourly delivery slot; the contract clears
-matched orders. Multi-region: Portugal / Spain / Italy / Denmark each have a
-separate `EnergyBiddingMarket` contract on Nova Cidade. The app also bridges
-ETH from Arbitrum Sepolia (L2) → Nova Cidade (L3) via Arbitrum Orbit.
+Next.js Pages Router app for an on-chain energy bidding market. Buyers post bids and
+sellers post asks per hourly delivery slot; the contract clears matched orders. Portugal,
+Spain, Italy and Denmark each have their own `EnergyBiddingMarket` contract on Nova Cidade.
+The app also bridges ETH from Arbitrum Sepolia (L2) to Nova Cidade (L3) via Arbitrum Orbit,
+carries an NFT tab, and serves a `/faucet` route. Deployed at https://wattswap.vercel.app.
 
 ## Tech stack
+
 - Next.js 16 (Pages Router) + React 19
-- Wagmi v2 + Reown AppKit (formerly Web3Modal) for wallet UX
-- viem 2.x + ethers (via `@arbitrum/sdk` for bridge deposits)
-- Tailwind 4 + lucide-react + motion(framer)
-- react-day-picker for date pickers
+- wagmi v2 + Reown AppKit (formerly Web3Modal)
+- viem 2.x. ethers v5 arrives indirectly through `@arbitrum/sdk` and is used for the bridge
+  and for `AppContext`'s providers
+- Tailwind 4, lucide-react, motion, react-day-picker, d3 (dashboard)
 
 ## Directory map
+
 ```
 src/
-  pages/        index.tsx, bridge.tsx, faucet.tsx (Pages Router; tab UI inside index)
+  pages/        index.tsx (tabbed UI), bridge.tsx, faucet.tsx, api/faucet.ts
   components/
     market/     BidBox, SellBox, CombinedOrdersBox, ClaimBox, TradeHistoryBox, dashboard/
-    bridge/     BridgeBox, NetworkSelector, SubmitDepositButton, SubmitWithdrawalButton
-    common/     ConnectAndSwitchNetworkButton, DateTimePicker, DateNavigationBar, RegionDropdownList
-    ui/         Button, Card, SkeletonLine, TransactionModal, ErrorBoundary, ...
-    nft/        NFT gallery / mint UI
-  config/       chains.ts (Nova Cidade + Arb Sepolia), wagmi.ts, constants.ts
-  context/      AppContext (region market address, providers, eth price)
-  hooks/        useTradeData, useMarketToast, etc.
-  utils/        dateHelpers, units (kWh ↔ watts), formatBalance, fetchUserCountry
-abi/            EnergyBiddingMarket.json, CommunitasNFT.json
-constants/      addresses.json (per-chain, per-region market addresses), outputInfo.json (Nova Cidade chain meta)
+    bridge/     BridgeBox, BridgeHistory, NetworkSelector, SubmitDepositButton,
+                SubmitWithdrawalButton, AmountInput, MessageHistoryRow, NavigationTabs
+    common/     ConnectAndSwitchNetworkButton, DateTimePicker, DateNavigationBar,
+                RegionDropdownList, MobileDrawer, Slider
+    ui/         Button, Card, Input, Badge, Skeleton, Spinner, Switch, EmptyState,
+                TransactionModal, ErrorBoundary
+    nft/        NFTBox, NFTCard, PendingNFTBox, BridgeNFTL1ToL2Button,
+                BridgeNFTL2ToL1Button, BridgeNFTL2ToL1ExecuteButton
+  config/       chains.ts, wagmi.ts, constants.ts (re-exported from index.ts)
+  context/      AppContext.tsx (region market address, l1/l2 providers, eth price)
+  hooks/        useTradeData, useDashboardData, useMarketToast, useTransactionFeedback
+  utils/        dateHelpers, units, utils (formatBalance, getProviderForChainId),
+                fetchUserCountry, ethersHelper, mapOrbitConfigToOrbitChain,
+                blockscoutApi, executeMessageL2ToL1Helper
+  types/        index.ts
+  styles/
+abi/            EnergyBiddingMarket.json, CommunitasNFT.json, CommunitasNFTL1.json,
+                CommunitasNFTL2.json
+constants/      addresses.json (per-chain, per-region contract addresses),
+                outputInfo.json (Nova Cidade chain meta + Orbit core/token-bridge
+                contracts), config.ts
 ```
 
-## Key commands
+`TAB_COMPONENTS` in `src/pages/index.tsx`: 1 Buy, 2 Sell, 3 Orders, 4 Trades, 5 Claim,
+6 NFTs, 7 Dashboard. Only the active tab renders.
+
+## Commands
+
+Package manager is npm (`package-lock.json`; there is no pnpm lockfile).
+
 ```bash
-npm install                # install
-npm run dev                # next dev server (localhost:3000)
-npm run build              # next build
-npm run start              # serve production build
-npm run lint               # eslint
+npm install
+npm run dev                # next dev, localhost:3000
+npm run build              # next build --webpack
+npm run start
+npm run lint               # eslint .
 ```
 
 ## Chains
-- **Nova Cidade Chain (default)** — chainId `93735000855` / `0x15d30a9b17`, RPC `https://testnet.novaims.unl.pt/`, explorer `https://testnet.explorer.novaims.unl.pt/`. Hosts all `EnergyBiddingMarket` contracts.
-- **Arbitrum Sepolia (parent)** — chainId `421614`, RPC from `NEXT_PUBLIC_INFURA_RPC` (Alchemy by default). Used as origin for the deposit flow into Nova Cidade.
+
+- **Nova Cidade (default)**: chainId `93735000855` / `0x15d30a9b17`, RPC
+  `https://testnet.novaims.unl.pt/`, explorer `https://testnet.explorer.novaims.unl.pt/`.
+  Defined in `src/config/chains.ts` from `constants/outputInfo.json`. Hosts every
+  `EnergyBiddingMarket` contract.
+- **Arbitrum Sepolia (parent)**: chainId `421614`, RPC from `NEXT_PUBLIC_INFURA_RPC`
+  (an Alchemy endpoint). Origin chain for the deposit flow.
+
+Every parent-chain call in the browser must read `NEXT_PUBLIC_INFURA_RPC`. Next.js only
+inlines `NEXT_PUBLIC_*` into the client bundle, so a plain `process.env.FOO` in client code
+is `undefined` at runtime and silently falls back. `utils/mapOrbitConfigToOrbitChain.ts`
+used to read `process.env.L1RPC` and fell through to the public
+`sepolia-rollup.arbitrum.io/rpc`, which rate-limits per IP. Fixed 2026-08-26 and `L1RPC`
+removed from `.env`. That was a latent fault, not the cause of the Aug-2026 bridge failure
+described below.
+
+### Which RPC each surface uses
+
+| Surface | Path | Endpoint |
+|---|---|---|
+| Reads on Nova Cidade (market, NFT tab `useReadContract`) | wagmi transport | `https://testnet.novaims.unl.pt/` |
+| Reads on Arbitrum Sepolia | wagmi transport | `fallback([Alchemy, public arb RPC])` |
+| Bridge and NFT bridge `l1Provider` | `AppContext` ethers | `NEXT_PUBLIC_INFURA_RPC` (Alchemy), no fallback |
+| Bridge and NFT bridge `l2Provider` | `AppContext` ethers | `https://testnet.novaims.unl.pt/` |
+| Orbit SDK registration | `mapOrbitConfigToOrbitChain` | `NEXT_PUBLIC_INFURA_RPC`, defaults `confirmPeriodBlocks` to 150 on failure |
+| Sending a transaction | the user's wallet | MetaMask's own RPC, not the app's |
+
+### Bridge deposit failed with `-32005 Request is being rate limited` (Aug 2026)
+
+MetaMask never opened. The error surfaced from `SubmitDepositButton`'s catch with
+`httpStatus: 429` and a stack entirely inside the extension. The deposit's reads were going
+through the wallet, not the app: ethers routes `estimateGas` through `signer.provider`
+(`node_modules/@ethersproject/providers/lib/json-rpc-provider.js:266`), and the button's
+`getBlock("latest")` used the same provider. `signer` comes from `useEthersSigner`, which
+wraps the wagmi transport in a `Web3Provider`, so both landed on MetaMask's built-in
+Arbitrum Sepolia endpoint, which is shared across all MetaMask users and throttles.
+
+Fix: both reads now go through `AppContext`'s `l1Provider` (the keyed Alchemy endpoint) via
+a local `readProvider`, and the estimated `gasLimit` is passed in `overrides` so ethers has
+no reason to ask the wallet. MetaMask is left with `eth_chainId` and the
+`eth_sendTransaction` itself. This is mitigation, not a cure: MetaMask still broadcasts
+through its own RPC and polls on it in the background, so a user whose MetaMask is badly
+throttled should point that network at a keyed RPC in wallet settings.
+
+`SubmitWithdrawalButton.tsx:47` still has the `signer.provider!.getBlock("latest")` pattern,
+but a withdrawal signs on Nova Cidade, where MetaMask uses our own node rather than a shared
+public endpoint. Left as-is.
+
+Notes:
+- The Alchemy key is public by design (it ships in the client bundle). Restrict it by origin
+  in the Alchemy dashboard rather than trying to hide it. The same key is used by the nitro
+  node and by Blockscout's `INDEXER_ARBITRUM_L1_RPC`; the indexer's `eth_getLogs` sweeps are
+  the heavy consumer.
+- `testnet.novaims.unl.pt` and `wattswap.novaims.unl.pt` are split-horizon: `10.10.2.57` on
+  campus, `193.136.119.39` publicly. Both are the same box, so there is no second Nova Cidade
+  endpoint to fall back to. `wagmi.ts` therefore uses a bare `http()` transport for Nova
+  Cidade and a `fallback()` only for Arbitrum Sepolia.
+- Remaining single points of failure: the Nova Cidade node itself, and `AppContext`'s
+  `l1Provider` (a plain `StaticJsonRpcProvider`, no failover). Add a `FallbackProvider` there
+  if Alchemy outages start affecting the NFT bridge.
+
+## Environment variables
+
+`.env` (see `.env.example`): `NEXT_PUBLIC_PROJECT_ID` (Reown), `NEXT_PUBLIC_INFURA_RPC`
+(Alchemy Arbitrum Sepolia), `FAUCET_PASSWORD`, `FAUCET_PRIVATE_KEY`. The two faucet vars are
+server-side only, deliberately without the `NEXT_PUBLIC_` prefix.
 
 ## Faucet (`/faucet`)
-- Page: `src/pages/faucet.tsx`. API: `src/pages/api/faucet.ts` (server-side, uses
-  `FAUCET_PRIVATE_KEY` + `FAUCET_PASSWORD` from `.env`).
-- **Dual-chain**: each request sends **two** transactions from the same faucet
-  wallet (`0x7502e2fcD1416648e4F2392B8F274C7f1e5b1081`):
-  - **0.01 ETH on Nova Cidade L3** (`FAUCET_AMOUNT_NOVA`) — covers all market tests.
-  - **0.0015 ETH on Arbitrum Sepolia** (`FAUCET_AMOUNT_ARB`) — covers the two
-    bridge-dependent tests (TC09.01 deposit + withdrawal claim). Sizing: 0.001 ETH
-    bridged + ~0.0005 ETH gas headroom across both legs at live ~0.02 gwei base fee.
-- Arb Sepolia send applies `maxFeePerGas = baseFee*5`, `maxPriorityFeePerGas = 0`
-  to dodge the "max fee per gas less than block base fee" revert (same pattern as
-  the bridge buttons).
-- API response returns legacy `{hash, amount, explorer}` (Nova) plus
-  `{novaCidade, arbitrumSepolia}` objects (each `{chain, amount, hash, explorer}`).
-  The success view renders one tx block per chain, each with copy + explorer links.
+
+- Page `src/pages/faucet.tsx`, API `src/pages/api/faucet.ts`.
+- Each request sends two transactions from the same wallet
+  (`0x7502e2fcD1416648e4F2392B8F274C7f1e5b1081`):
+  0.01 ETH on Nova Cidade (`FAUCET_AMOUNT_NOVA`), which covers all market tests, and
+  0.0015 ETH on Arbitrum Sepolia (`FAUCET_AMOUNT_ARB`), which covers the two bridge-dependent
+  tests (TC09.01 deposit and the withdrawal claim). The Arb figure is 0.001 ETH to bridge plus
+  roughly 0.0005 ETH of gas headroom across both legs at a ~0.02 gwei base fee.
+- The Arb Sepolia send applies `maxFeePerGas = baseFee * 5` and `maxPriorityFeePerGas = 0`,
+  the same pattern as the bridge buttons, to avoid the "max fee per gas less than block base
+  fee" revert.
 - Min-balance guards: `MIN_BALANCE_NOVA = 0.02`, `MIN_BALANCE_ARB = 0.003`.
-- Verified end-to-end 2026-06-02 (drove the page with the `playwright` Claude skill,
-  both txs confirmed on-chain: Nova `0x94b768…c4a0`, Arb `0x9db393…f09d15`).
+- The response keeps the legacy `{hash, amount, explorer}` fields (Nova) and adds
+  `{novaCidade, arbitrumSepolia}` objects, each `{chain, amount, hash, explorer}`. The success
+  view renders one transaction block per chain with copy and explorer links.
+- Verified end to end 2026-06-02, both transactions confirmed on-chain (Nova `0x94b768…c4a0`,
+  Arb `0x9db393…f09d15`).
+- The faucet wallet is also the Nova Cidade **batch poster** (`batchPoster` in
+  `constants/outputInfo.json`). Draining it on Arbitrum Sepolia stops the chain posting
+  batches to the parent chain. Watch its Sepolia balance.
 
 ## Conventions
-- Contract operates in **watts**; UI displays **kWh**. Conversion lives in `utils/units.ts` (`WATTS_PER_KWH = 1000`).
-- Region selection in `RegionDropdownList` swaps `energyMarketAddress` via `AppContext`. Defaults to user's geo-detected country via `fetchUserCountry`, falling back to first available.
-- Wagmi default chain is **Nova Cidade**, so after `Connect Wallet` the wallet auto-switches there. The `/bridge` page explicitly switches back to Arbitrum Sepolia for the deposit step.
-- `SubmitDepositButton` uses `@arbitrum/sdk` `EthBridger.deposit({ amount, parentSigner })` — see "Known bugs" below.
-- TransactionModal phases: `idle → pending → confirming → bridging → success | error`.
+
+- The contract works in watts, the UI displays kWh. `WATTS_PER_KWH = 1000` is defined in
+  `src/config/constants.ts`; the conversion helpers live in `src/utils/units.ts`.
+- `RegionDropdownList` swaps `energyMarketAddress` on `AppContext`. It defaults to the user's
+  geo-detected country via `utils/fetchUserCountry.ts`, falling back to the first available
+  region.
+- The wagmi default chain is Nova Cidade, so the wallet auto-switches there after
+  `Connect Wallet`. `/bridge` switches back to Arbitrum Sepolia for the deposit step.
+- `TransactionStatus` phases: `idle | pending | confirming | bridging | success | error`
+  (`src/components/ui/TransactionModal.tsx`).
+- Both bridge buttons pass explicit gas overrides (`maxFeePerGas = baseFee * 5`,
+  `maxPriorityFeePerGas = 0`, the Arbitrum sequencer ignores tips). Do not remove them, see
+  the 2026-05-20 bug below.
 
 ## Test cases
-- TC09.01 — Connect wallet + Bridge funds Arbitrum → Nova Cidade
-- TC09.02 — Place a bid on energy
-- TC09.04 — Check bid result (Buyer Orders)
-- TC09.06 — Claim refund (Buyer)
-- TC09.08 — Cancel bid order
-- TC09.10 — Dashboard / hourly energy data
 
-## Known bugs found 2026-05-20 via Playwright + dappwright (MetaMask 13.17.0) automation against `https://wattswap.vercel.app/`
+TC09.01 connect wallet and bridge Arbitrum to Nova Cidade; TC09.02 place a bid;
+TC09.04 check bid result (Buyer Orders); TC09.06 claim refund (buyer); TC09.08 cancel bid
+order; TC09.10 dashboard / hourly energy data.
 
-1. **Bridge deposit reverted: "max fee per gas less than block base fee" — FIXED in this repo (HIGH).**
-   `SubmitDepositButton` called `EthBridger.deposit({ amount, parentSigner })`
-   with no gas overrides. ethers v5's default formula (`maxFeePerGas =
-   baseFee * 2 + maxPriorityFeePerGas`) routinely lands below the next
-   block's baseFee on Arbitrum Sepolia because the L2's baseFee fluctuates
-   within seconds (observed `maxFeePerGas=20002000` vs `baseFee=20006000` at
-   the time of failure). Tx was rejected with `code -32603` and the
-   TransactionModal showed "Transaction Failed — Something went wrong with
-   your transaction".
+## Known bugs found 2026-05-20
 
-   **Fix applied** to both `src/components/bridge/SubmitDepositButton.tsx` and
-   `src/components/bridge/SubmitWithdrawalButton.tsx`: fetch the latest
-   block's `baseFeePerGas` from the connected signer's provider, compute
-   `maxFeePerGas = baseFee * 5` and `maxPriorityFeePerGas = 0` (Arbitrum
-   sequencer ignores tips), and pass them via `overrides`.
+Found with Playwright + dappwright (MetaMask 13.17.0) against https://wattswap.vercel.app/.
 
-   **Verified on-chain 2026-05-20** with a standalone script that runs the
-   exact same code path: L1 tx `0xa1dbd4...5435` mined on Arb Sepolia, L1→L2
-   message landed on Nova Cidade (`complete: true`), 0.001 ETH bridged
-   successfully. Not an RPC staleness issue — three independent RPCs
-   (Alchemy, sepolia-rollup.arbitrum.io, publicnode) all returned the same
-   base fee.
+1. **Bridge deposit reverted with "max fee per gas less than block base fee" (HIGH, fixed).**
+   `SubmitDepositButton` called `EthBridger.deposit({ amount, parentSigner })` with no gas
+   overrides. The ethers v5 default (`maxFeePerGas = baseFee * 2 + maxPriorityFeePerGas`)
+   routinely lands below the next block's base fee on Arbitrum Sepolia, whose base fee moves
+   within seconds (observed `maxFeePerGas=20002000` against `baseFee=20006000`). The
+   transaction was rejected with `code -32603`.
 
-2. **Hydration mismatch on every page load: React error #418 — FIXED (MEDIUM).**
-   `src/components/common/DateTimePicker.tsx` initialised state with
-   `useState({ from: getNextHour(1), to: getNextHour(1) })`. `getNextHour`
-   calls `new Date()`, so SSR and CSR markup differed → React aborted
-   hydration and re-rendered the tree client-side, also producing console
-   noise. Fixed by adding a `mounted` flag that gates the picker's full JSX
-   tree: SSR returns an empty fixed-height placeholder `<div>` and the real
-   picker swaps in on the first client `useEffect` tick. State defaults
-   remain numeric (no need to thread `undefined` through all the hour
-   maths).
+   Fixed in `SubmitDepositButton.tsx` and `SubmitWithdrawalButton.tsx` by reading the latest
+   block's `baseFeePerGas`, computing `maxFeePerGas = baseFee * 5` and
+   `maxPriorityFeePerGas = 0`, and passing them via `overrides`. Verified on-chain 2026-05-20:
+   L1 transaction `0xa1dbd4…5435` on Arb Sepolia, L1 to L2 message landed on Nova Cidade
+   (`complete: true`), 0.001 ETH bridged. Not an RPC staleness issue, three independent RPCs
+   returned the same base fee.
 
-3. **Minor: two `<svg>` width/height "Unexpected end of attribute" console warnings (LOW — OPEN).**
-   An SVG renders with an empty `width=""` / `height=""` during initial load.
-   Grepping the codebase didn't surface a local component passing an empty
-   string — every `<Image>` / `<svg>` callsite supplies a literal number or a
-   defaulted prop. Likely originates from a third-party (react-day-picker
-   nav icon or Reown AppKit `<w3m-modal>` shadow DOM) before its own data
-   resolves. Cosmetic — does not affect rendering. Track down if it ever
-   shows up as a real symptom.
+   The 2026-05 fix read the base fee off the *signer's* provider. In Aug 2026 the deposit path
+   was changed again to read off `AppContext`'s `l1Provider` instead, for the rate-limiting
+   reason above. The withdrawal path still reads off the signer.
 
-## What's verified to work end-to-end
-- Wallet connect via Reown AppKit → MetaMask (real popup approval).
-- Auto network switch to Nova Cidade after connect.
-- Manual network switch back to Arbitrum Sepolia on `/bridge` via the
-  "Switch to Arbitrum" button (uses `wallet_addEthereumChain` +
-  `wallet_switchEthereumChain`).
-- **Bridge deposit Arb Sepolia → Nova Cidade** — with the gas-override fix
-  applied, real on-chain deposit succeeds. L1 tx confirmed, L1→L2 retryable
-  ticket auto-redeemed, child balance increases by the deposited amount.
-- `Place Bid` flow on `Buy` tab — submits real on-chain bid tx to the
-  region-specific `EnergyBiddingMarket` contract. Tested **Portugal**,
-  **Spain**, **Denmark** — all three regions confirmed on-chain with the
-  success modal "Bid placed successfully! / Bid Submitted!".
-- `Cancel Bid` flow on `Orders` tab — places-bid-then-cancels round trip
-  end-to-end verified for **Spain** and **Denmark**: click Active filter →
-  expand a pending bid row → "Cancel Bid" button → confirm MM tx → row
-  removed / status flipped.
-- `Orders`, `Trades`, `Claim`, `NFTs`, `Dashboard` tabs all render without
-  errors. The "Wrong Network" guard correctly forces a network switch when
-  the wallet is on Arbitrum Sepolia.
+2. **Hydration mismatch on every page load, React error #418 (MEDIUM, fixed).**
+   `src/components/common/DateTimePicker.tsx` initialised state with `getNextHour(1)`, which
+   calls `new Date()`, so SSR and CSR markup differed and React aborted hydration. Fixed with a
+   `mounted` flag: before mount the component returns a fixed-height placeholder `<div>`
+   (`minHeight: 480`) and the real picker swaps in on the first client `useEffect` tick. The
+   state defaults stay numeric.
 
-## Playwright + MetaMask test harness (developer reference)
+3. **Two `<svg>` width/height "Unexpected end of attribute" console warnings (LOW, open).**
+   An SVG renders with empty `width=""` / `height=""` during initial load. No local component
+   passes an empty string; every `<Image>` and `<svg>` callsite supplies a literal number or a
+   defaulted prop. Likely a third party (react-day-picker's nav icon, or Reown AppKit's
+   `<w3m-modal>` shadow DOM) before its own data resolves. Cosmetic.
 
-A persistent MM profile lives at `~/.cache/wattswap-test/`. Reuse it instead
-of re-onboarding MetaMask every run — first connect goes from ~60–90s
-(dappwright bootstrap) down to **~11s** (Chromium launches with the cached
-profile, wagmi auto-reconnects from saved cookies).
+## Verified end to end
+
+Wallet connect through Reown AppKit to MetaMask; auto network switch to Nova Cidade after
+connect; manual switch back to Arbitrum Sepolia on `/bridge` (`wallet_addEthereumChain` plus
+`wallet_switchEthereumChain`); bridge deposit Arb Sepolia to Nova Cidade with the gas
+overrides applied, retryable ticket auto-redeemed and child balance credited; `Place Bid` on
+the Buy tab against Portugal, Spain and Denmark; `Cancel Bid` round trip on the Orders tab for
+Spain and Denmark. Orders, Trades, Claim, NFTs and Dashboard all render, and the "Wrong
+Network" guard forces a switch when the wallet sits on Arbitrum Sepolia.
+
+## Playwright + MetaMask test harness
+
+A persistent MetaMask profile lives at `~/.cache/wattswap-test/`. Reuse it rather than
+re-onboarding MetaMask every run: first connect drops from roughly 60 to 90 seconds
+(dappwright bootstrap) to about 11 seconds, because Chromium launches with the cached profile
+and wagmi auto-reconnects from saved cookies.
 
 ```js
 import { openMM, driveMM, shadowClick } from '/home/USER/.cache/wattswap-test/mm-launcher.mjs';
@@ -162,31 +232,29 @@ await driveMM(context, 'tx-confirm');               // approves any open MM popu
 await close();
 ```
 
-Smoke test: `node ~/.cache/wattswap-test/smoke-launcher.mjs`. To rebuild the
-cache (e.g. after a MetaMask upgrade): `node ~/.cache/wattswap-test/bootstrap-once.mjs`.
-The cache imports the `FAUCET_PRIVATE_KEY` from this repo's `.env`.
+Smoke test: `node ~/.cache/wattswap-test/smoke-launcher.mjs`. Rebuild the cache after a
+MetaMask upgrade with `node ~/.cache/wattswap-test/bootstrap-once.mjs`. The cache imports
+`FAUCET_PRIVATE_KEY` from this repo's `.env`.
 
-For the underlying problems with `@tenkeylabs/dappwright` against MM 13.17
-(why we built the launcher in the first place):
+Why the launcher exists, given `@tenkeylabs/dappwright` against MM 13.17:
 
 - `dappwright.bootstrap(...)` only triggers the MetaMask download when
-  `process.env.TEST_PARALLEL_INDEX === '0'`. **Always export
-  `TEST_PARALLEL_INDEX=0`** when running outside `@playwright/test`'s parallel
-  runner, otherwise it sits forever printing "Waiting for primary worker to
-  download metamask…".
-- Force `DISPLAY=:1` (and `XAUTHORITY=/run/user/<UID>/gdm/Xauthority`) so
-  Playwright launches the full `chromium-1223/chrome-linux64/chrome` rather
-  than the headless-shell binary that can't load extensions.
-- Drive the MM popup yourself: enumerate `context.pages()` looking for a
-  `chrome-extension://…/notification.html` page and click `getByTestId('confirm-btn')`
-  / `getByTestId('confirm-footer-button')` / `getByRole('button', { name: /^(connect|confirm|next|approve)$/i })`.
-- `wallet.addNetwork` is flaky in MM 13.17 — skip it and let the dApp drive
-  network registration via `wallet_addEthereumChain` prompts that you approve
-  through the same popup-driver.
+  `process.env.TEST_PARALLEL_INDEX === '0'`. Always export `TEST_PARALLEL_INDEX=0` outside
+  `@playwright/test`'s parallel runner, otherwise it sits forever printing "Waiting for primary
+  worker to download metamask…".
+- Force `DISPLAY=:1` (and `XAUTHORITY=/run/user/<UID>/gdm/Xauthority`) so Playwright launches
+  the full `chromium-1223/chrome-linux64/chrome` rather than the headless-shell binary, which
+  cannot load extensions.
+- Drive the MetaMask popup yourself: enumerate `context.pages()` for a
+  `chrome-extension://…/notification.html` page and click `getByTestId('confirm-btn')`,
+  `getByTestId('confirm-footer-button')` or
+  `getByRole('button', { name: /^(connect|confirm|next|approve)$/i })`.
+- `wallet.addNetwork` is flaky in MM 13.17. Skip it and let the dApp drive network registration
+  through `wallet_addEthereumChain` prompts approved by the same popup driver.
 
 ## Test wallet
-The `.env` file contains `FAUCET_PRIVATE_KEY` for the address
-`0x7502e2fcD1416648e4F2392B8F274C7f1e5b1081`. At time of testing it held
-1.465 ETH on Arbitrum Sepolia and 1.141 ETH on Nova Cidade. **This is the
-same key the live `/faucet` route uses to drip ETH to users** — automated
-tests will deplete it.
+
+`FAUCET_PRIVATE_KEY` in `.env` is the key for `0x7502e2fcD1416648e4F2392B8F274C7f1e5b1081`,
+the same wallet the live `/faucet` route drips from and the Nova Cidade batch poster.
+Automated tests deplete it, and an empty Sepolia balance stops batch posting. Check its
+balance before and after a test run.

@@ -21,7 +21,7 @@ const SubmitDepositButtonInner: React.FC<SubmitDepositButtonProps> = ({
   hasEnoughBalance,
 }) => {
   const signer = useEthersSigner();
-  const { l2Provider, ethPrice } = useAppContext();
+  const { l1Provider, l2Provider, ethPrice } = useAppContext();
 
   // Modal state
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -41,19 +41,41 @@ const SubmitDepositButtonInner: React.FC<SubmitDepositButtonProps> = ({
       const childChainNetwork = getArbitrumNetwork(defaultChain.id);
       const ethBridger = new EthBridger(childChainNetwork);
 
+      // ponytail: read through our own keyed parent-chain RPC, never the wallet's.
+      // MetaMask's built-in Arbitrum Sepolia endpoint is shared across all its users
+      // and returns -32005 "Request is being rate limited" under load. ethers routes
+      // getBlock and estimateGas through signer.provider (the wallet) unless we hand
+      // it the answers, which used to kill the deposit before the popup ever opened.
+      // MetaMask still signs and broadcasts; it just no longer does our reads.
+      const readProvider = l1Provider ?? signer.provider!;
+
       // Arbitrum Sepolia's base fee fluctuates within seconds and the default
       // ethers v5 estimation (maxFeePerGas = baseFee*2) routinely lands below
       // the next block's baseFee, causing "max fee per gas less than block
       // base fee" reverts. Apply a 5x buffer over the current base fee.
-      const latestBlock = await signer.provider!.getBlock("latest");
+      const latestBlock = await readProvider.getBlock("latest");
       const baseFee = latestBlock.baseFeePerGas ?? BigNumber.from(0);
       const maxPriorityFeePerGas = BigNumber.from(0); // Arbitrum sequencer ignores priority fee
       const maxFeePerGas = baseFee.mul(5).add(maxPriorityFeePerGas);
 
+      // Estimate here so ethers does not ask the wallet to. getDepositRequest only
+      // encodes calldata locally, so this costs one call on our own RPC.
+      const depositAmount = BigNumber.from(amount.toString());
+      let gasLimit: BigNumber | undefined;
+      try {
+        const { txRequest } = await ethBridger.getDepositRequest({
+          amount: depositAmount,
+          from: await signer.getAddress(),
+        });
+        gasLimit = (await readProvider.estimateGas(txRequest)).mul(3).div(2);
+      } catch {
+        // Leave undefined and let ethers estimate through the wallet as before.
+      }
+
       const depositTransaction = await ethBridger.deposit({
-        amount: BigNumber.from(amount.toString()),
+        amount: depositAmount,
         parentSigner: signer,
-        overrides: { maxFeePerGas, maxPriorityFeePerGas },
+        overrides: { maxFeePerGas, maxPriorityFeePerGas, ...(gasLimit ? { gasLimit } : {}) },
       });
 
       setTxHash(depositTransaction.hash);
@@ -84,7 +106,7 @@ const SubmitDepositButtonInner: React.FC<SubmitDepositButtonProps> = ({
       }
       setTxError(message);
     }
-  }, [signer, l2Provider, amount]);
+  }, [signer, l1Provider, l2Provider, amount]);
 
   const closeModal = useCallback(() => {
     setIsModalOpen(false);

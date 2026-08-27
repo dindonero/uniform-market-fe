@@ -41,10 +41,19 @@ export const mapOrbitConfigToOrbitChain = async (
 ): Promise<ArbitrumNetwork> => {
     const rollup = RollupAdminLogic__factory.connect(
         data.coreContracts.rollup,
-        new StaticJsonRpcProvider(process.env.L1RPC ?? "https://sepolia-rollup.arbitrum.io/rpc", data.chainInfo.parentChainId)
+        new StaticJsonRpcProvider(process.env.NEXT_PUBLIC_INFURA_RPC ?? "https://sepolia-rollup.arbitrum.io/rpc", data.chainInfo.parentChainId)
     )
-    const confirmPeriodBlocks =
-        (await rollup.confirmPeriodBlocks()).toNumber() ?? 150
+    // ponytail: the parent-chain read is the only network call here, and a throttled
+    // or down L1 RPC used to take the whole bridge with it (registerCustomArbitrumNetwork
+    // never ran, so deposits could not be built). 150 is the chain's real on-chain value;
+    // falling back to it keeps the bridge usable. The old `?? 150` was unreachable —
+    // a rejected call throws, and .toNumber() never yields null.
+    let confirmPeriodBlocks = 150
+    try {
+        confirmPeriodBlocks = (await rollup.confirmPeriodBlocks()).toNumber()
+    } catch {
+        // keep the default
+    }
 
     return {
         chainId: data.chainInfo.chainId,

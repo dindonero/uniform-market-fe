@@ -2,9 +2,9 @@
  * Wagmi and Reown AppKit configuration
  */
 
-import { http, cookieStorage, createStorage } from "wagmi";
+import { http, fallback, cookieStorage, createStorage } from "wagmi";
 import { WagmiAdapter } from "@reown/appkit-adapter-wagmi";
-import { novaCidadeMainnet, customArbitrumSepolia } from "./chains";
+import { novaCidadeMainnet, customArbitrumSepolia, arbitrumSepoliaRpcUrls } from "./chains";
 import type { AppKitNetwork } from "@reown/appkit/networks";
 
 // Reown project ID (formerly Web3Modal)
@@ -31,8 +31,11 @@ export const wagmiAdapter = new WagmiAdapter({
   ssr: true,
   storage: createStorage({ storage: cookieStorage }) as any,
   transports: {
+    // Nova Cidade is a single self-hosted node, so there is no second endpoint to fall
+    // back to; a list here would just be the same box twice.
     [novaCidadeMainnet.id]: http(),
-    [customArbitrumSepolia.id]: http(),
+    // Keyed endpoint first, public RPC only if it fails.
+    [customArbitrumSepolia.id]: fallback(arbitrumSepoliaRpcUrls.map((url) => http(url))),
   },
 });
 
